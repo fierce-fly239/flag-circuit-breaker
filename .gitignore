@@ -1,0 +1,8 @@
+# Secret keys live here. Never commit this file.
+.env
+
+# Compiled Java classes
+*.class
+
+# macOS folder junk
+.DS_Store
