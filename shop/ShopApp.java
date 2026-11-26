@@ -33,17 +33,24 @@ public class ShopApp {
 
     static long windowMs;
     static double failRate;
+    static double threshold; // shown as a line on the page; the breaker uses the same setting
+
+    // Set when the breaker reports a trip, cleared when the flag is switched on again.
+    static volatile String lastTrip = null;
 
     public static void main(String[] args) throws IOException {
         loadEnv(".env");
         windowMs = Long.parseLong(setting("WINDOW_SECONDS", "10")) * 1000;
         failRate = Double.parseDouble(setting("NEW_CHECKOUT_FAIL_RATE", "0.5"));
+        threshold = Double.parseDouble(setting("ERROR_THRESHOLD", "0.3"));
 
         startFlagReader();
 
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 8080), 0);
         server.createContext("/checkout", ShopApp::checkout);
         server.createContext("/metrics", ShopApp::metrics);
+        server.createContext("/breaker-event", ShopApp::breakerEvent);
+        server.createContext("/", ShopApp::page);
         server.setExecutor(Executors.newFixedThreadPool(4)); // up to 4 requests at the same time
         server.start();
         System.out.println("Shop running on http://localhost:8080  (window " + windowMs / 1000
@@ -85,6 +92,7 @@ public class ShopApp {
                         boolean nowOn = readEnabled(response.body());
                         if (nowOn && !flagOn) {
                             flagOnSince = System.currentTimeMillis();
+                            lastTrip = null; // a new release starts with a clear banner
                             System.out.println("Flag " + FLAG_NAME + " is now ON");
                         } else if (!nowOn && flagOn) {
                             System.out.println("Flag " + FLAG_NAME + " is now OFF");
@@ -156,8 +164,44 @@ public class ShopApp {
                 + ",\"requests\":" + requests
                 + ",\"errors\":" + errors
                 + ",\"errorRate\":" + String.format("%.2f", rate)
+                + ",\"threshold\":" + threshold
+                + ",\"lastTrip\":" + (lastTrip == null ? "null" : lastTrip)
                 + "}";
         send(exchange, 200, json);
+    }
+
+    // The breaker POSTs the error rate it saw (a plain number like 0.43) when it trips.
+    static void breakerEvent(HttpExchange exchange) throws IOException {
+        if (!exchange.getRequestMethod().equals("POST")) {
+            send(exchange, 405, "{\"error\":\"use POST\"}");
+            return;
+        }
+        String body = new String(exchange.getRequestBody().readAllBytes()).trim();
+        double rateBefore;
+        try {
+            rateBefore = Double.parseDouble(body);
+        } catch (NumberFormatException e) {
+            send(exchange, 400, "{\"error\":\"body must be a number\"}");
+            return;
+        }
+        String time = java.time.LocalTime.now().withNano(0).toString();
+        lastTrip = "{\"time\":\"" + time + "\",\"flag\":\"" + FLAG_NAME + "\",\"rateBefore\":" + rateBefore + "}";
+        System.out.println("Breaker reported a trip at " + time);
+        send(exchange, 200, "{\"ok\":true}");
+    }
+
+    // Serves the live page. The file is read on every request, so edits show on refresh.
+    static void page(HttpExchange exchange) throws IOException {
+        if (!exchange.getRequestURI().getPath().equals("/")) {
+            send(exchange, 404, "{\"error\":\"not found\"}");
+            return;
+        }
+        byte[] html = Files.readAllBytes(Path.of("web/index.html"));
+        exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+        exchange.sendResponseHeaders(200, html.length);
+        try (OutputStream out = exchange.getResponseBody()) {
+            out.write(html);
+        }
     }
 
     // ---------- The error window ----------

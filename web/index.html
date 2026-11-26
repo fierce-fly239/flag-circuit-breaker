@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flag Circuit Breaker</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 0;
+      padding: 24px 16px;
+      background: #f4f4f5;
+      color: #18181b;
+    }
+    main {
+      max-width: 820px;
+      margin: 0 auto;
+    }
+    h1 {
+      margin: 0 0 4px;
+      font-size: 26px;
+    }
+    .sub {
+      margin: 0 0 20px;
+      color: #52525b;
+    }
+
+    /* Red banner, hidden until the breaker trips */
+    #banner {
+      background: #dc2626;
+      color: white;
+      padding: 16px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 18px;
+    }
+    #banner strong {
+      display: block;
+      font-size: 24px;
+      letter-spacing: 1px;
+    }
+
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .card {
+      flex: 1;
+      min-width: 140px;
+      background: white;
+      border-radius: 8px;
+      padding: 12px 16px;
+    }
+    .card .label {
+      font-size: 13px;
+      color: #52525b;
+    }
+    .card .value {
+      font-size: 28px;
+      font-weight: bold;
+    }
+
+    #flag.on {
+      color: #2563eb;
+    }
+    #flag.off {
+      color: #71717a;
+    }
+
+    /* The graph: one bar per second, height = error rate */
+    #graph-box {
+      background: white;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+    }
+    #graph {
+      position: relative;
+      height: 200px;
+      display: flex;
+      align-items: flex-end;
+      gap: 2px;
+      border-bottom: 1px solid #a1a1aa;
+    }
+    .bar {
+      flex: 1;
+      background: #a1a1aa;
+    }
+    .bar.on {
+      background: #2563eb;
+    }
+    .bar.over {
+      background: #dc2626;
+    }
+    #threshold-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      border-top: 2px dashed #dc2626;
+    }
+    .legend {
+      font-size: 13px;
+      color: #52525b;
+      margin-top: 8px;
+    }
+
+    button {
+      font-size: 16px;
+      padding: 10px 18px;
+      border: none;
+      border-radius: 8px;
+      background: #18181b;
+      color: white;
+      cursor: pointer;
+    }
+    button:focus-visible {
+      outline: 3px solid #2563eb;
+      outline-offset: 2px;
+    }
+    #error-note {
+      color: #dc2626;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Flag Circuit Breaker</h1>
+    <p class="sub">Live view of the demo shop. Switch <code>new_checkout</code> on in
+      <a href="http://localhost:8000" target="_blank">Flagsmith</a> and send traffic.</p>
+
+    <div id="banner" role="alert" hidden>
+      <strong>BREAKER TRIPPED</strong>
+      <span id="banner-text"></span>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <div class="label">Flag new_checkout</div>
+        <div class="value" id="flag">...</div>
+      </div>
+      <div class="card">
+        <div class="label">Error rate (last <span id="window">10</span> s)</div>
+        <div class="value" id="rate">...</div>
+      </div>
+      <div class="card">
+        <div class="label">Errors / requests</div>
+        <div class="value" id="counts">...</div>
+      </div>
+    </div>
+
+    <div id="graph-box">
+      <div id="graph">
+        <div id="threshold-line"></div>
+      </div>
+      <div class="legend">One bar per second, height = error rate. Grey = flag off, blue = flag on,
+        red = over the threshold. Dashed line = threshold.</div>
+    </div>
+
+    <p>
+      <button id="traffic">Start fake traffic</button>
+      <span id="error-note"></span>
+    </p>
+  </main>
+
+  <script>
+    // Keep the last 60 readings (one per second) for the graph.
+    const MAX_BARS = 60;
+    const graph = document.getElementById("graph");
+    const thresholdLine = document.getElementById("threshold-line");
+
+    // Adds one bar to the graph and removes the oldest when there are too many.
+    function addBar(m) {
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      if (m.enabled) bar.classList.add("on");
+      if (m.errorRate > m.threshold) bar.classList.add("over");
+      // Keep a 1% stub so a 0% second is still visible.
+      bar.style.height = Math.max(m.errorRate * 100, 1) + "%";
+      bar.title = Math.round(m.errorRate * 100) + "% errors";
+      graph.appendChild(bar);
+
+      const bars = graph.querySelectorAll(".bar");
+      if (bars.length > MAX_BARS) bars[0].remove();
+    }
+
+    // Writes the latest numbers into the cards and shows or hides the banner.
+    function show(m) {
+      const flag = document.getElementById("flag");
+      flag.textContent = m.enabled ? "ON" : "OFF";
+      flag.className = "value " + (m.enabled ? "on" : "off");
+
+      document.getElementById("window").textContent = m.windowSeconds;
+      document.getElementById("rate").textContent = Math.round(m.errorRate * 100) + "%";
+      document.getElementById("counts").textContent = m.errors + " / " + m.requests;
+      thresholdLine.style.bottom = (m.threshold * 100) + "%";
+
+      const banner = document.getElementById("banner");
+      if (m.lastTrip) {
+        document.getElementById("banner-text").textContent =
+          "At " + m.lastTrip.time + " the breaker switched " + m.lastTrip.flag +
+          " OFF in Flagsmith. Error rate was " + Math.round(m.lastTrip.rateBefore * 100) +
+          "% (threshold " + Math.round(m.threshold * 100) + "%).";
+        banner.hidden = false;
+      } else {
+        banner.hidden = true;
+      }
+    }
+
+    // Every second: ask the shop for /metrics, then update the page.
+    setInterval(async () => {
+      const note = document.getElementById("error-note");
+      try {
+        const response = await fetch("/metrics");
+        const m = await response.json();
+        note.textContent = "";
+        show(m);
+        addBar(m);
+      } catch (e) {
+        note.textContent = "Shop not reachable. Is ShopApp running?";
+      }
+    }, 1000);
+
+    // Fake traffic: while on, send one checkout every 200 ms (5 per second).
+    let trafficTimer = null;
+    const button = document.getElementById("traffic");
+    button.addEventListener("click", () => {
+      if (trafficTimer === null) {
+        trafficTimer = setInterval(() => fetch("/checkout"), 200);
+        button.textContent = "Stop fake traffic";
+      } else {
+        clearInterval(trafficTimer);
+        trafficTimer = null;
+        button.textContent = "Start fake traffic";
+      }
+    });
+  </script>
+</body>
+</html>

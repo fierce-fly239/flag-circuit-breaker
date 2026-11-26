@@ -85,6 +85,7 @@ public class Breaker {
         System.out.println("  Flag:        " + flagName + "  ->  switched OFF in Flagsmith");
         System.out.println("  Error rate:  " + percent(rateBefore) + "  (threshold " + percent(threshold) + ")");
         System.out.println("=========================================================");
+        reportToShop(shopUrl, rateBefore);
 
         // Wait one full error window (plus the shop's 2 s flag check), then measure again.
         Thread.sleep((windowSeconds + 3) * 1000L);
@@ -92,6 +93,19 @@ public class Breaker {
         System.out.println("  Error rate " + (windowSeconds + 3) + " s later: " + percent(numberAfter(after, "errorRate"))
                 + "  (" + (int) numberAfter(after, "requests") + " requests in the last " + windowSeconds + " s)");
         System.out.println();
+    }
+
+    // Tells the shop, so the live page can show the red banner. Not critical: the flag is already off.
+    static void reportToShop(String shopUrl, double rateBefore) {
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(shopUrl + "/breaker-event"))
+                    .POST(HttpRequest.BodyPublishers.ofString(String.valueOf(rateBefore)))
+                    .build();
+            client.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (Exception e) {
+            System.out.println("  (could not tell the shop about the trip: " + e.getMessage() + ")");
+        }
     }
 
     // PATCH .../featurestates/{id}/ with {"enabled": false}, using the ADMIN key.
