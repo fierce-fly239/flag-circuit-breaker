@@ -6,6 +6,8 @@ within seconds.
 
 Built for Toggle Wars (WeMakeDevs × Flagsmith), Track 03: self-hosted Flagsmith.
 
+**Demo video:** https://youtu.be/FxrciBkzPMg
+
 ## The problem
 
 Feature flags let a team ship new code switched off and turn it on later, without a redeploy.
